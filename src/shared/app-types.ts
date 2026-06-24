@@ -6,6 +6,7 @@ import type {
   TimerSnapshot,
   TimerStatus
 } from './scheduler'
+import type { AppInfo } from './app-runtime'
 
 export type TimerStartRequest =
   | {
@@ -67,7 +68,13 @@ export interface RecurringSchedule {
   enabled: boolean
 }
 
-export type SmartConditionType = 'idle' | 'cpu-below' | 'network-below'
+export type SmartConditionType =
+  | 'idle'
+  | 'battery-below'
+  | 'cpu-below'
+  | 'gpu-below'
+  | 'network-below'
+  | 'download-complete'
 
 export interface SmartRule {
   id: string
@@ -112,6 +119,7 @@ export interface StoreShape {
 
 export interface TimerApi {
   getState: () => Promise<AppState>
+  getAppInfo: () => Promise<AppInfo>
   start: (request: TimerStartRequest) => Promise<AppState>
   cancel: () => Promise<AppState>
   postpone: (minutes: number) => Promise<AppState>
@@ -124,6 +132,10 @@ export interface TimerApi {
   toggleSmartRule: (id: string, enabled: boolean) => Promise<AppState>
   clearHistory: () => Promise<AppState>
   onStateChanged: (callback: (state: AppState) => void) => () => void
+  onAppInfoChanged: (callback: (info: AppInfo) => void) => () => void
+  checkForUpdates: () => Promise<AppInfo>
+  installUpdate: () => Promise<void>
   openFullWindow: () => Promise<void>
+  openExternal: (url: string) => Promise<void>
   quitApp: () => Promise<void>
 }

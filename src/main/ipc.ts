@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 
 import type { RecurringSchedule, SmartRule, TimerStartRequest } from '../shared/app-types'
 import type { TimerSettings } from '../shared/scheduler'
+import { AppUpdaterService } from './app-updater'
 import { TimerService } from './timer-service'
 
 export function registerTimerIpc(timerService: TimerService): void {
@@ -27,6 +28,18 @@ export function registerTimerIpc(timerService: TimerService): void {
   ipcMain.handle('history:clear', () => timerService.clearHistory())
 }
 
+export function registerAppIpc(appUpdaterService: AppUpdaterService): void {
+  ipcMain.handle('app:get-info', () => appUpdaterService.getAppInfo())
+  ipcMain.handle('app:check-for-updates', () => appUpdaterService.checkForUpdates())
+  ipcMain.handle('app:install-update', () => {
+    appUpdaterService.installUpdate()
+  })
+}
+
 export function broadcastState(window: BrowserWindow, timerService: TimerService): void {
   window.webContents.send('timer:state-changed', timerService.getAppState())
+}
+
+export function broadcastAppInfo(window: BrowserWindow, appUpdaterService: AppUpdaterService): void {
+  window.webContents.send('app:info-changed', appUpdaterService.getAppInfo())
 }

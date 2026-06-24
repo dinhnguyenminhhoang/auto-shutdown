@@ -6,6 +6,7 @@ import type {
   TimerApi,
   TimerStartRequest
 } from '../../shared/app-types'
+import { createDefaultAppInfo, type AppInfo } from '../../shared/app-runtime'
 import { DEFAULT_PROFILES, DEFAULT_SETTINGS, DEFAULT_TIMER_SNAPSHOT } from '../../shared/defaults'
 
 // Load from localStorage or defaults
@@ -27,12 +28,21 @@ const saveLocalStorageJSON = (key: string, value: unknown): void => {
 }
 
 const listeners = new Set<(state: AppState) => void>()
+const appInfoListeners = new Set<(info: AppInfo) => void>()
 
 let settings = getLocalStorageJSON('settings', DEFAULT_SETTINGS)
 let schedules = getLocalStorageJSON('schedules', [])
 let smartRules = getLocalStorageJSON('smartRules', [])
 let history = getLocalStorageJSON('history', [])
 let activeTimer: ActiveTimer | null = getLocalStorageJSON('activeTimer', null)
+let appInfo: AppInfo = {
+  ...createDefaultAppInfo('dev'),
+  update: {
+    ...createDefaultAppInfo('dev').update,
+    status: 'disabled',
+    message: 'Tự động cập nhật không hoạt động trong bản xem trước'
+  }
+}
 
 let timerInterval: NodeJS.Timeout | null = null
 
@@ -78,6 +88,10 @@ const notifyChanged = (): void => {
   listeners.forEach((callback) => callback(state))
 }
 
+const notifyAppInfoChanged = (): void => {
+  appInfoListeners.forEach((callback) => callback(appInfo))
+}
+
 const startTimerPolling = (): void => {
   if (timerInterval) clearInterval(timerInterval)
   timerInterval = setInterval(() => {
@@ -115,6 +129,7 @@ if (activeTimer) {
 
 export const webMockApi: TimerApi = {
   getState: async () => getAppState(),
+  getAppInfo: async () => appInfo,
   start: async (request: TimerStartRequest) => {
     const now = new Date()
     let targetAt: Date
@@ -252,8 +267,32 @@ export const webMockApi: TimerApi = {
       listeners.delete(callback)
     }
   },
+  onAppInfoChanged: (callback) => {
+    appInfoListeners.add(callback)
+    return () => {
+      appInfoListeners.delete(callback)
+    }
+  },
+  checkForUpdates: async () => {
+    appInfo = {
+      ...appInfo,
+      update: {
+        ...appInfo.update,
+        status: 'disabled',
+        message: 'Tự động cập nhật không hoạt động trong bản xem trước'
+      }
+    }
+    notifyAppInfoChanged()
+    return appInfo
+  },
+  installUpdate: async () => {
+    console.log('Mock: installUpdate called')
+  },
   openFullWindow: async () => {
     console.log('Mock: openFullWindow called')
+  },
+  openExternal: async (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
   },
   quitApp: async () => {
     console.log('Mock: quitApp called')

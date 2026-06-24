@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   CalendarClock,
+  Download,
+  Heart,
   Clock3,
   History,
   Lock,
@@ -21,8 +23,11 @@ import {
   ChevronDown
 } from 'lucide-react'
 import appIcon from './assets/icon.ico'
+import supportQr from './assets/support-qr.png'
 
 import { Button } from '@/components/ui/button'
+import { AppFooter } from './components/app-footer'
+import { SupportTabContent } from './components/support-tab-content'
 import type {
   AppState,
   QuickProfile,
@@ -38,9 +43,26 @@ import {
   type TimerSettings,
   type Weekday
 } from '../../shared/scheduler'
+import {
+  formatSmartRuleSummary,
+  getDefaultSmartDuration,
+  getDefaultSmartThreshold,
+  getSmartConditionOption,
+  SMART_CONDITION_OPTIONS,
+  smartConditionUsesThreshold
+} from '../../shared/smart-rule-helpers'
+import {
+  canCheckForUpdates,
+  canInstallUpdate,
+  createDefaultAppInfo,
+  formatUpdateStatusLabel,
+  type AppInfo,
+  type AppUpdateState
+} from '../../shared/app-runtime'
+import { SUPPORT_INFO, type SupportCopyField } from '../../shared/support-info'
 
 type StartMode = 'delay' | 'clock'
-type NavTab = 'home' | 'schedules' | 'smart' | 'history' | 'settings'
+type NavTab = 'home' | 'schedules' | 'smart' | 'history' | 'settings' | 'support'
 
 const ACTIONS: { id: PowerAction; label: string; icon: React.ElementType }[] = [
   { id: 'shutdown', label: 'Tắt máy', icon: Power },
@@ -80,8 +102,10 @@ const EMPTY_STATE: AppState = {
 
 function App(): React.JSX.Element {
   const [state, setState] = useState<AppState>(EMPTY_STATE)
+  const [appInfo, setAppInfo] = useState<AppInfo>(createDefaultAppInfo('0.0.0'))
   const [activeTab, setActiveTab] = useState<NavTab>('home')
   const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [copiedSupportField, setCopiedSupportField] = useState<SupportCopyField>(null)
   const [mode, setMode] = useState<StartMode>('delay')
   const [delayMinutes, setDelayMinutes] = useState(30)
   const [clockTime, setClockTime] = useState('23:30')
@@ -90,10 +114,11 @@ function App(): React.JSX.Element {
   const [scheduleWeekdays, setScheduleWeekdays] = useState<Weekday[]>([1, 2, 3, 4, 5])
   const [smartName, setSmartName] = useState('Tắt khi máy rảnh')
   const [smartCondition, setSmartCondition] = useState<SmartConditionType>('idle')
-  const [smartDuration, setSmartDuration] = useState(15)
-  const [smartThreshold, setSmartThreshold] = useState(10)
+  const [smartDuration, setSmartDuration] = useState(getDefaultSmartDuration('idle'))
+  const [smartThreshold, setSmartThreshold] = useState(getDefaultSmartThreshold('idle'))
   const [scheduleAction, setScheduleAction] = useState<PowerAction>('shutdown')
   const [smartAction, setSmartAction] = useState<PowerAction>('shutdown')
+  const copiedSupportTimeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
     window.api.getState().then(setState)
@@ -102,11 +127,25 @@ function App(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
+    window.api.getAppInfo().then(setAppInfo)
+
+    return window.api.onAppInfoChanged(setAppInfo)
+  }, [])
+
+  useEffect(() => {
     const isSystemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
     const shouldUseDark =
       state.settings.theme === 'dark' || (state.settings.theme === 'system' && isSystemDark)
     document.documentElement.classList.toggle('dark', shouldUseDark)
   }, [state.settings.theme])
+
+  useEffect(() => {
+    return () => {
+      if (copiedSupportTimeoutRef.current !== null) {
+        window.clearTimeout(copiedSupportTimeoutRef.current)
+      }
+    }
+  }, [])
 
   const hasActiveTimer = state.timer.status !== 'idle'
   const targetLabel = state.timer.targetAt
@@ -119,9 +158,62 @@ function App(): React.JSX.Element {
     : 'Chưa đặt'
 
   const actionLabel = ACTIONS.find((action) => action.id === state.timer.action)?.label ?? 'Tắt máy'
+  const smartConditionOption = getSmartConditionOption(smartCondition)
 
   async function refresh(nextState: Promise<AppState>): Promise<void> {
-    setState(await nextState)
+    try {
+      setState(await nextState)
+    } catch (error) {
+      console.error('Failed to refresh application state', error)
+      alert('Không thể thực hiện thao tác này. Vui lòng kiểm tra lại dữ liệu đã nhập.')
+      window.api.getState().then(setState).catch(() => undefined)
+    }
+  }
+
+  async function refreshAppInfo(nextInfo: Promise<AppInfo>): Promise<void> {
+    try {
+      setAppInfo(await nextInfo)
+    } catch (error) {
+      console.error('Failed to refresh app info', error)
+      alert('Không thể tải trạng thái ứng dụng lúc này. Vui lòng thử lại sau.')
+    }
+  }
+
+  async function copySupportValue(field: Exclude<SupportCopyField, null>, value: string): Promise<void> {
+    try {
+      await writeTextToClipboard(value)
+      setCopiedSupportField(field)
+
+      if (copiedSupportTimeoutRef.current !== null) {
+        window.clearTimeout(copiedSupportTimeoutRef.current)
+      }
+
+      copiedSupportTimeoutRef.current = window.setTimeout(() => {
+        setCopiedSupportField(null)
+        copiedSupportTimeoutRef.current = null
+      }, 2000)
+    } catch (error) {
+      console.error('Failed to copy support info', error)
+      alert('Không thể sao chép thông tin. Vui lòng thử lại.')
+    }
+  }
+
+  async function handleOpenExternal(url: string): Promise<void> {
+    try {
+      await window.api.openExternal(url)
+    } catch (error) {
+      console.error('Failed to open external url', error)
+      alert('Không thể mở liên kết ngoài. Vui lòng thử lại.')
+    }
+  }
+
+  async function handleInstallUpdate(): Promise<void> {
+    try {
+      await window.api.installUpdate()
+    } catch (error) {
+      console.error('Failed to install update', error)
+      alert('Không thể bắt đầu cài đặt bản cập nhật. Vui lòng thử lại sau.')
+    }
   }
 
   function createStartRequest(profile?: QuickProfile): TimerStartRequest {
@@ -194,13 +286,19 @@ function App(): React.JSX.Element {
       condition: smartCondition,
       action: smartAction,
       durationMinutes: Math.max(1, smartDuration),
-      threshold: Math.max(0, smartThreshold),
+      threshold: smartConditionUsesThreshold(smartCondition) ? Math.max(0, smartThreshold) : 0,
       warningMinutes: state.settings.warningMinutes,
       soundEnabled: state.settings.soundEnabled,
       enabled: true
     }
 
     await refresh(window.api.saveSmartRule(rule))
+  }
+
+  function handleSmartConditionChange(nextCondition: SmartConditionType): void {
+    setSmartCondition(nextCondition)
+    setSmartThreshold(getDefaultSmartThreshold(nextCondition))
+    setSmartDuration(getDefaultSmartDuration(nextCondition))
   }
 
   const selectedActionLabel = ACTIONS.find((a) => a.id === state.settings.action)?.label ?? 'Tắt máy'
@@ -235,6 +333,7 @@ function App(): React.JSX.Element {
           {activeTab === 'smart' && 'Hẹn giờ thông minh'}
           {activeTab === 'history' && 'Nhật ký hoạt động'}
           {activeTab === 'settings' && 'Cấu hình hệ thống'}
+          {activeTab === 'support' && 'Ủng hộ phát triển'}
         </div>
 
         <div className="flex items-center gap-3">
@@ -348,15 +447,32 @@ function App(): React.JSX.Element {
                     <Settings className="size-3.5" />
                     Cấu hình hệ thống
                   </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('support')
+                      setIsMenuOpen(false)
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-medium transition-all ${
+                      activeTab === 'support'
+                        ? 'bg-primary/10 text-primary'
+                        : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
+                    } cursor-pointer`}
+                  >
+                    <Heart className="size-3.5" />
+                    Ủng hộ phát triển
+                  </button>
                 </nav>
                 <div className="border-t mt-2 pt-2 px-3 text-[10px] text-muted-foreground font-mono text-center">
-                  v1.0.0 · AutoShutdownVN
+                  v{appInfo.version} · AutoShutdownVN
                 </div>
               </div>
             )}
           </div>
         </div>
       </header>
+
+      <FinalMinutePopup state={state} refresh={refresh} />
 
       {/* Main Content Area */}
       <main className="flex-1 overflow-y-auto bg-secondary/10 p-4 flex flex-col">
@@ -755,9 +871,7 @@ function App(): React.JSX.Element {
                           <Info className="size-3.5" />
                         </span>
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-300 rounded-lg shadow-xl z-50 text-center leading-normal normal-case font-normal">
-                          {smartCondition === 'idle' && 'Tự động kích hoạt hành động khi máy tính không nhận bất kỳ thao tác bàn phím/chuột nào.'}
-                          {smartCondition === 'cpu-below' && 'Tự động kích hoạt hành động khi hiệu suất CPU hệ thống hạ thấp dưới mức giới hạn.'}
-                          {smartCondition === 'network-below' && 'Tự động kích hoạt hành động khi lưu lượng mạng hệ thống hạ thấp dưới mức giới hạn.'}
+                          {smartConditionOption.description}
                         </div>
                       </div>
                     </div>
@@ -766,29 +880,31 @@ function App(): React.JSX.Element {
                         className="h-11 w-full rounded-xl border bg-background pl-3 pr-10 text-sm font-medium outline-none appearance-none focus:ring-2 focus:ring-primary cursor-pointer transition-all hover:bg-secondary/20"
                         value={smartCondition}
                         onChange={(event) =>
-                          setSmartCondition(event.target.value as SmartConditionType)
+                          handleSmartConditionChange(event.target.value as SmartConditionType)
                         }
                       >
-                        <option value="idle">Không tác động máy (Idle)</option>
-                        <option value="cpu-below">Hiệu suất CPU thấp hơn mức</option>
-                        <option value="network-below">Lưu lượng mạng thấp hơn mức</option>
+                        {SMART_CONDITION_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
                       </select>
                       <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 size-4 pointer-events-none text-muted-foreground" />
                     </div>
                   </div>
 
-                  {(smartCondition === 'cpu-below' || smartCondition === 'network-below') && (
+                  {smartConditionUsesThreshold(smartCondition) && (
                     <div className="grid gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       <div className="flex items-center gap-1.5">
-                        <span>Ngưỡng giới hạn ({smartCondition === 'network-below' ? 'KB/s' : '%'})</span>
+                        <span>
+                          {smartConditionOption.thresholdLabel} ({smartConditionOption.thresholdUnit})
+                        </span>
                         <div className="relative group flex items-center justify-center">
                           <span className="cursor-help text-muted-foreground hover:text-foreground transition-all">
                             <Info className="size-3.5" />
                           </span>
                           <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-300 rounded-lg shadow-xl z-50 text-center leading-normal normal-case font-normal">
-                            {smartCondition === 'cpu-below'
-                              ? 'Nhập phần trăm CPU tối đa (ví dụ: 5 nghĩa là dưới 5% CPU). Nếu CPU hạ thấp dưới mức này liên tục, hành động sẽ chạy.'
-                              : 'Nhập tốc độ mạng tối đa bằng KB/s (ví dụ: 100 nghĩa là dưới 100 KB/s). Nếu tốc độ mạng hạ thấp dưới mức này liên tục, hành động sẽ chạy.'}
+                            {smartConditionOption.thresholdHelp}
                           </div>
                         </div>
                       </div>
@@ -810,9 +926,7 @@ function App(): React.JSX.Element {
                           <Info className="size-3.5" />
                         </span>
                         <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-2.5 bg-zinc-950 border border-zinc-800 text-[10px] text-zinc-300 rounded-lg shadow-xl z-50 text-center leading-normal normal-case font-normal">
-                          {smartCondition === 'idle'
-                            ? 'Thời gian rảnh liên tục của máy tính trước khi bắt đầu đếm ngược thực hiện hành động.'
-                            : 'Khoảng thời gian liên tục mà điều kiện trên phải được thỏa mãn trước khi bắt đầu đếm ngược thực hiện hành động.'}
+                          {smartConditionOption.durationHelp}
                         </div>
                       </div>
                     </div>
@@ -866,7 +980,7 @@ function App(): React.JSX.Element {
                         <div className="space-y-1">
                           <p className="font-semibold text-sm">{rule.name}</p>
                           <p className="text-xs text-muted-foreground font-medium">
-                            {formatSmartCondition(rule)} ·{' '}
+                            {formatSmartRuleSummary(rule)} ·{' '}
                             <span className="text-primary font-semibold">
                               {getActionLabel(rule.action)}
                             </span>
@@ -1048,11 +1162,125 @@ function App(): React.JSX.Element {
                   </div>
                 </div>
               </div>
+
+              <div className="rounded-2xl border bg-card p-6 shadow-sm space-y-5 md:col-span-2">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="space-y-1">
+                    <h3 className="text-base font-semibold flex items-center gap-2">
+                      <Download className="size-4 text-primary" />
+                      Phiên bản & cập nhật
+                    </h3>
+                    <p className="text-sm text-muted-foreground">
+                      Phiên bản hiện tại: <strong className="text-foreground">v{appInfo.version}</strong>
+                    </p>
+                  </div>
+
+                  <UpdateStatusBadge update={appInfo.update} />
+                </div>
+
+                <div className="rounded-2xl border bg-background/70 px-4 py-3">
+                  <p className="text-sm font-medium text-foreground">
+                    {formatUpdateStatusLabel(appInfo.update)}
+                  </p>
+                  {appInfo.update.checkedAt && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Kiểm tra gần nhất: {new Date(appInfo.update.checkedAt).toLocaleString('vi-VN')}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    className="h-10 rounded-xl px-4 text-xs font-semibold cursor-pointer"
+                    disabled={!canCheckForUpdates(appInfo.update)}
+                    onClick={() => void refreshAppInfo(window.api.checkForUpdates())}
+                  >
+                    Kiểm tra cập nhật
+                  </Button>
+
+                  {canInstallUpdate(appInfo.update) && (
+                    <Button
+                      className="h-10 rounded-xl px-4 text-xs font-semibold cursor-pointer"
+                      onClick={() => void handleInstallUpdate()}
+                    >
+                      Cài bản cập nhật ngay
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
+          )}
+
+          {activeTab === 'support' && (
+            <SupportTabContent
+              qrSrc={supportQr}
+              copiedField={copiedSupportField}
+              onCopyAccountNumber={() =>
+                void copySupportValue('accountNumber', SUPPORT_INFO.accountNumber)
+              }
+              onCopyAccountName={() =>
+                void copySupportValue('accountName', SUPPORT_INFO.accountName)
+              }
+            />
           )}
         </div>
       </main>
+
+      <AppFooter appInfo={appInfo} onOpenAuthorLink={() => void handleOpenExternal(appInfo.authorFacebookUrl)} />
     </div>
+  )
+}
+
+async function writeTextToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+
+  const copied = document.execCommand('copy')
+  document.body.removeChild(textarea)
+
+  if (!copied) {
+    throw new Error('Clipboard copy command failed')
+  }
+}
+
+function UpdateStatusBadge({ update }: { update: AppUpdateState }): React.JSX.Element {
+  const styles: Record<AppUpdateState['status'], string> = {
+    disabled: 'bg-secondary text-muted-foreground border-border',
+    idle: 'bg-secondary text-muted-foreground border-border',
+    checking: 'bg-primary/10 text-primary border-primary/20',
+    available: 'bg-primary/10 text-primary border-primary/20',
+    downloading: 'bg-primary/10 text-primary border-primary/20',
+    downloaded: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20',
+    'not-available': 'bg-secondary text-muted-foreground border-border',
+    error: 'bg-destructive/10 text-destructive border-destructive/20'
+  }
+
+  const labels: Record<AppUpdateState['status'], string> = {
+    disabled: 'Chưa bật',
+    idle: 'Sẵn sàng',
+    checking: 'Đang kiểm tra',
+    available: 'Đã tìm thấy',
+    downloading: 'Đang tải',
+    downloaded: 'Sẵn sàng cài',
+    'not-available': 'Mới nhất',
+    error: 'Lỗi cập nhật'
+  }
+
+  return (
+    <span className={`rounded-xl border px-3 py-1.5 text-xs font-semibold tracking-wide ${styles[update.status]}`}>
+      {labels[update.status]}
+    </span>
   )
 }
 
@@ -1079,6 +1307,150 @@ function StatusBadge({ status }: { status: AppState['timer']['status'] }): React
     <span className={`rounded-xl border px-3 py-1.5 text-xs font-semibold tracking-wide ${badgeStyles[status]}`}>
       {labels[status]}
     </span>
+  )
+}
+
+function FinalMinutePopup({
+  state,
+  refresh,
+  compact = false
+}: {
+  state: AppState
+  refresh: (nextState: Promise<AppState>) => Promise<void>
+  compact?: boolean
+}): React.JSX.Element | null {
+  const isFinalMinute =
+    state.timer.status !== 'idle' && state.timer.remainingMs > 0 && state.timer.remainingMs <= 60_000
+
+  if (!isFinalMinute) {
+    return null
+  }
+
+  const actionLabel = getActionLabel(state.timer.action).toLowerCase()
+  const countdownLabel = formatDuration(state.timer.remainingMs)
+  const progress = Math.min(100, Math.max(0, ((60_000 - state.timer.remainingMs) / 60_000) * 100))
+
+  if (compact) {
+    return (
+      <div className="w-full">
+        <div className="rounded-2xl border border-amber-500/25 bg-zinc-950/95 px-2.5 py-2 shadow-xl shadow-amber-500/10 backdrop-blur-sm">
+          <div className="flex items-start gap-2.5">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500">
+              <AlertTriangle className="size-4" />
+            </div>
+
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-amber-300">
+                1 phút cuối
+              </p>
+              <h3 className="text-sm font-semibold leading-tight text-zinc-50">
+                Tự {actionLabel} sau {countdownLabel}
+              </h3>
+            </div>
+
+            <div className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200 whitespace-nowrap">
+              Cuối
+            </div>
+          </div>
+
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-amber-500/15">
+            <div
+              className="h-full rounded-full bg-amber-400 transition-all duration-1000 ease-linear"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <Button
+              variant="outline"
+              className="h-8 rounded-lg border-amber-500/25 bg-amber-500/10 px-2.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20 cursor-pointer"
+              onClick={() => refresh(window.api.postpone(5))}
+            >
+              +5p
+            </Button>
+            <Button
+              variant="outline"
+              className="h-8 rounded-lg border-amber-500/25 bg-amber-500/10 px-2.5 text-[11px] font-semibold text-amber-100 hover:bg-amber-500/20 cursor-pointer"
+              onClick={() => refresh(window.api.postpone(30))}
+            >
+              +30p
+            </Button>
+            <Button
+              variant="destructive"
+              className="h-8 rounded-lg px-2.5 text-[11px] font-semibold cursor-pointer"
+              onClick={() => refresh(window.api.cancel())}
+            >
+              Hủy
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      className={
+        'fixed left-1/2 top-4 z-50 w-[min(48rem,calc(100vw-2rem))] -translate-x-1/2'
+      }
+    >
+      <div
+        className="rounded-3xl border border-amber-500/25 bg-zinc-950/95 px-4 py-4 shadow-2xl shadow-amber-500/10 backdrop-blur-sm"
+      >
+        <div className="flex items-start gap-3">
+          <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-amber-500/15 text-amber-500">
+            <AlertTriangle className="size-5" />
+          </div>
+
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-300">
+              1 phút cuối cùng
+            </p>
+            <h3 className="text-base font-semibold text-zinc-50">
+              Máy sẽ tự {actionLabel} sau {countdownLabel}
+            </h3>
+            <p className="text-xs text-zinc-400">
+              Đây là cảnh báo cuối trước khi hành động được thực thi.
+            </p>
+          </div>
+
+          <div className="rounded-full border border-amber-500/25 bg-amber-500/10 px-3 py-1 text-[11px] font-semibold text-amber-200">
+            Cảnh báo cuối
+          </div>
+        </div>
+
+        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-amber-500/15">
+          <div
+            className="h-full rounded-full bg-amber-400 transition-all duration-1000 ease-linear"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            className="h-9 rounded-xl border-amber-500/25 bg-amber-500/10 px-3 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 cursor-pointer"
+            onClick={() => refresh(window.api.postpone(5))}
+          >
+            +5 phút
+          </Button>
+          <Button
+            variant="outline"
+            className="h-9 rounded-xl border-amber-500/25 bg-amber-500/10 px-3 text-xs font-semibold text-amber-100 hover:bg-amber-500/20 cursor-pointer"
+            onClick={() => refresh(window.api.postpone(30))}
+          >
+            +30 phút
+          </Button>
+          <Button
+            variant="destructive"
+            className="h-9 rounded-xl px-3 text-xs font-semibold cursor-pointer"
+            onClick={() => refresh(window.api.cancel())}
+          >
+            Hủy hẹn giờ
+          </Button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -1136,16 +1508,6 @@ function toggleWeekday(current: Weekday[], weekday: Weekday): Weekday[] {
 
 function formatWeekday(weekday: Weekday): string {
   return WEEKDAYS.find((item) => item.id === weekday)?.label ?? String(weekday)
-}
-
-function formatSmartCondition(rule: SmartRule): string {
-  const labels: Record<SmartConditionType, string> = {
-    idle: `Không dùng máy ${rule.durationMinutes} phút`,
-    'cpu-below': `CPU dưới ${rule.threshold}% trong ${rule.durationMinutes} phút`,
-    'network-below': `Mạng dưới ${rule.threshold} KB/s trong ${rule.durationMinutes} phút`
-  }
-
-  return labels[rule.condition]
 }
 
 function TrayView({
@@ -1227,6 +1589,8 @@ function TrayView({
           {hasActiveTimer ? 'Đang đếm ngược' : 'Chưa thiết lập'}
         </span>
       </div>
+
+      <FinalMinutePopup state={state} refresh={refresh} compact />
 
       {/* Main Interactive Area */}
       <div className="flex-1 p-4 flex flex-col justify-center overflow-y-auto space-y-4 bg-zinc-950/40">
@@ -1411,4 +1775,3 @@ function TrayView({
 }
 
 export default App
-

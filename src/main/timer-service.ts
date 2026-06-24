@@ -23,10 +23,13 @@ import type {
 } from '../shared/app-types'
 import { DEFAULT_PROFILES, DEFAULT_TIMER_SNAPSHOT } from '../shared/defaults'
 import {
+  findNextRecurringCandidate,
+  shouldReplaceRecurringTimer
+} from '../shared/recurring-timer-helpers'
+import {
   addDelay,
   formatDuration,
   getNextClockTarget,
-  getNextRecurringTarget,
   getWarningTime,
   type TimerSettings,
   type TimerSnapshot
@@ -64,13 +67,27 @@ export class TimerService extends EventEmitter<TimerEventMap> {
 
   start(request: TimerStartRequest): AppState {
     const now = new Date()
-    const target = this.getTargetFromRequest(request, now)
+    let target: Date
+
+    try {
+      target = this.getTargetFromRequest(request, now)
+    } catch {
+      this.emit('notify', 'Không thể đặt hẹn giờ', 'Thời gian cấu hình không hợp lệ.')
+      return this.emitState()
+    }
+
+    if (!Number.isFinite(target.getTime()) || target.getTime() <= now.getTime()) {
+      this.emit('notify', 'Không thể đặt hẹn giờ', 'Mốc thời gian cần nằm ở tương lai.')
+      return this.emitState()
+    }
+
     const warningAt = getWarningTime(target, request.warningMinutes)
+    const normalizedLabel = typeof request.label === 'string' ? request.label.trim() : ''
     const activeTimer: ActiveTimer = {
       id: createId(),
       mode: request.mode,
       action: request.action,
-      label: request.label.trim() || getDefaultLabel(request.action),
+      label: normalizedLabel || getDefaultLabel(request.action),
       targetAt: target.toISOString(),
       warningAt: warningAt?.toISOString() ?? null,
       warningMinutes: request.warningMinutes,
@@ -108,7 +125,15 @@ export class TimerService extends EventEmitter<TimerEventMap> {
       return this.getAppState()
     }
 
-    const target = addDelay(new Date(this.activeTimer.targetAt), minutes)
+    let target: Date
+
+    try {
+      target = addDelay(new Date(this.activeTimer.targetAt), minutes)
+    } catch {
+      this.emit('notify', 'Không thể dời hẹn giờ', 'Số phút phải nằm trong khoảng từ 1 đến 1440.')
+      return this.emitState()
+    }
+
     const warningAt = getWarningTime(target, this.activeTimer.warningMinutes)
 
     this.setActive({
@@ -294,26 +319,29 @@ export class TimerService extends EventEmitter<TimerEventMap> {
   }
 
   private ensureRecurringTimer(): void {
-    if (this.activeTimer) {
-      return
-    }
-
-    const candidates = getSchedules()
-      .filter((schedule) => schedule.enabled)
-      .map((schedule) => {
-        const target = getNextRecurringTarget(schedule.rule, new Date())
-        return target ? { schedule, target } : null
-      })
-      .filter((candidate): candidate is { schedule: RecurringSchedule; target: Date } =>
-        Boolean(candidate)
-      )
-      .sort((a, b) => a.target.getTime() - b.target.getTime())
-
-    const next = candidates[0]
+    const next = findNextRecurringCandidate(getSchedules(), new Date())
 
     if (!next) {
+      if (this.activeTimer?.mode === 'recurring') {
+        this.clearTimers()
+        this.activeTimer = null
+        setActiveTimer(null)
+      }
+
       return
     }
+
+    if (this.activeTimer && this.activeTimer.mode !== 'recurring') {
+      return
+    }
+
+    if (!shouldReplaceRecurringTimer(this.activeTimer, next) && this.activeTimer?.mode === 'recurring') {
+      return
+    }
+
+    this.clearTimers()
+    this.activeTimer = null
+    setActiveTimer(null)
 
     this.start({
       mode: 'recurring',

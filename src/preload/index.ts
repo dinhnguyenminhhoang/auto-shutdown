@@ -6,6 +6,7 @@ import type { TimerSettings } from '../shared/scheduler'
 // Custom APIs for renderer
 const api: TimerApi = {
   getState: () => ipcRenderer.invoke('timer:get-state'),
+  getAppInfo: () => ipcRenderer.invoke('app:get-info'),
   start: (request: TimerStartRequest) => ipcRenderer.invoke('timer:start', request),
   cancel: () => ipcRenderer.invoke('timer:cancel'),
   postpone: (minutes: number) => ipcRenderer.invoke('timer:postpone', minutes),
@@ -29,7 +30,19 @@ const api: TimerApi = {
 
     return () => ipcRenderer.removeListener('timer:state-changed', listener)
   },
+  onAppInfoChanged: (callback) => {
+    const listener = (_event: IpcRendererEvent, info: Parameters<typeof callback>[0]): void => {
+      callback(info)
+    }
+
+    ipcRenderer.on('app:info-changed', listener)
+
+    return () => ipcRenderer.removeListener('app:info-changed', listener)
+  },
+  checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+  installUpdate: () => ipcRenderer.invoke('app:install-update'),
   openFullWindow: () => ipcRenderer.invoke('app:open-full-window'),
+  openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url),
   quitApp: () => ipcRenderer.invoke('app:quit')
 }
 

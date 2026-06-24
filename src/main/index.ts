@@ -2,7 +2,8 @@ import { app, BrowserWindow, ipcMain, nativeImage, Notification, shell, type Tra
 import { join } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils'
 import iconIco from '../../resources/icon.ico?asset'
-import { broadcastState, registerTimerIpc } from './ipc'
+import { AppUpdaterService } from './app-updater'
+import { broadcastAppInfo, broadcastState, registerAppIpc, registerTimerIpc } from './ipc'
 import { runPowerAction } from './power-actions'
 import { SmartRuleService } from './smart-rule-service'
 import { TimerService } from './timer-service'
@@ -11,10 +12,16 @@ import { createAppTray } from './tray'
 let mainWindow: BrowserWindow | null = null
 let appTray: Tray | null = null
 let smartRuleService: SmartRuleService | null = null
+let appUpdaterService: AppUpdaterService | null = null
 let isQuitting = false
 let lastAutoLaunch: boolean | null = null
+let finalMinutePopupShown = false
+const START_MENU_SHORTCUT_DELAY_MS = 10_000
 
-function createWindow(timerService: TimerService): BrowserWindow {
+function createWindow(
+  timerService: TimerService,
+  runtimeService: AppUpdaterService
+): BrowserWindow {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
     width: 680,
@@ -33,6 +40,7 @@ function createWindow(timerService: TimerService): BrowserWindow {
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
     broadcastState(mainWindow, timerService)
+    broadcastAppInfo(mainWindow, runtimeService)
   })
 
   mainWindow.on('close', (event) => {
@@ -75,7 +83,10 @@ function showWindow(): void {
 
 let trayWindow: BrowserWindow | null = null
 
-function createTrayWindow(timerService: TimerService): BrowserWindow {
+function createTrayWindow(
+  timerService: TimerService,
+  runtimeService: AppUpdaterService
+): BrowserWindow {
   const win = new BrowserWindow({
     width: 320,
     height: 450,
@@ -111,19 +122,35 @@ function createTrayWindow(timerService: TimerService): BrowserWindow {
 
   win.on('ready-to-show', () => {
     broadcastState(win, timerService)
+    broadcastAppInfo(win, runtimeService)
   })
 
   return win
 }
 
-function showTrayWindow(): void {
-  if (!trayWindow || !appTray) {
+function ensureTrayWindow(
+  timerService: TimerService,
+  runtimeService: AppUpdaterService
+): BrowserWindow | null {
+  if (!appTray) {
+    return null
+  }
+
+  if (!trayWindow || trayWindow.isDestroyed()) {
+    trayWindow = createTrayWindow(timerService, runtimeService)
+  }
+
+  return trayWindow
+}
+
+function positionTrayWindow(targetWindow: BrowserWindow): void {
+  if (!appTray) {
     return
   }
 
   const { screen } = require('electron')
   const trayBounds = appTray.getBounds()
-  const windowBounds = trayWindow.getBounds()
+  const windowBounds = targetWindow.getBounds()
   const display = screen.getDisplayMatching(trayBounds)
   const screenBounds = display.workArea
   const fullBounds = display.bounds
@@ -155,9 +182,29 @@ function showTrayWindow(): void {
   x = Math.max(screenBounds.x + gap, Math.min(x, screenBounds.x + screenBounds.width - windowBounds.width - gap))
   y = Math.max(screenBounds.y + gap, Math.min(y, screenBounds.y + screenBounds.height - windowBounds.height - gap))
 
-  trayWindow.setPosition(x, y)
-  trayWindow.show()
-  trayWindow.focus()
+  targetWindow.setPosition(x, y)
+}
+
+function showTrayWindow(timerService: TimerService, runtimeService: AppUpdaterService): void {
+  const targetWindow = ensureTrayWindow(timerService, runtimeService)
+  if (!targetWindow) {
+    return
+  }
+
+  const reveal = (): void => {
+    positionTrayWindow(targetWindow)
+    broadcastState(targetWindow, timerService)
+    broadcastAppInfo(targetWindow, runtimeService)
+    targetWindow.show()
+    targetWindow.focus()
+  }
+
+  if (targetWindow.webContents.isLoadingMainFrame()) {
+    targetWindow.once('ready-to-show', reveal)
+    return
+  }
+
+  reveal()
 }
 
 
@@ -185,14 +232,12 @@ function syncAutoLaunch(openAtLogin: boolean): void {
   app.setLoginItemSettings({ openAtLogin })
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
-app.whenReady().then(() => {
-  // Set app user model id for windows natively
-  app.setAppUserModelId('com.auto-shutdown-vn')
+function scheduleStartMenuShortcutSync(): void {
+  if (!app.isPackaged || process.platform !== 'win32') {
+    return
+  }
 
-  if (process.platform === 'win32') {
+  setTimeout(() => {
     const shortcutPath = join(
       app.getPath('appData'),
       'Microsoft',
@@ -201,6 +246,7 @@ app.whenReady().then(() => {
       'Programs',
       'Auto Shutdown VN.lnk'
     )
+
     try {
       shell.writeShortcutLink(shortcutPath, 'create', {
         target: process.execPath,
@@ -210,7 +256,16 @@ app.whenReady().then(() => {
     } catch (error) {
       console.error('Failed to create start menu shortcut', error)
     }
-  }
+  }, START_MENU_SHORTCUT_DELAY_MS)
+}
+
+// This method will be called when Electron has finished
+// initialization and is ready to create browser windows.
+// Some APIs can only be used after this event occurs.
+app.whenReady().then(() => {
+  // Set app user model id for windows natively
+  app.setAppUserModelId('com.auto-shutdown-vn')
+  scheduleStartMenuShortcutSync()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -221,15 +276,22 @@ app.whenReady().then(() => {
 
   const timerService = new TimerService()
   smartRuleService = new SmartRuleService(timerService)
+  const runtimeService = new AppUpdaterService()
+  appUpdaterService = runtimeService
   registerTimerIpc(timerService)
+  registerAppIpc(runtimeService)
 
   ipcMain.handle('app:open-full-window', () => {
     showWindow()
     trayWindow?.hide()
   })
+  ipcMain.handle('app:open-external', (_event, url: string) => {
+    return shell.openExternal(url)
+  })
   ipcMain.handle('app:quit', () => {
     isQuitting = true
     smartRuleService?.stop()
+    appUpdaterService?.stop()
     appTray?.destroy()
     app.quit()
   })
@@ -243,6 +305,25 @@ app.whenReady().then(() => {
     if (trayWindow && !trayWindow.isDestroyed()) {
       broadcastState(trayWindow, timerService)
     }
+
+    const isFinalMinute =
+      state.timer.status !== 'idle' && state.timer.remainingMs > 0 && state.timer.remainingMs <= 60_000
+
+    if (!isFinalMinute) {
+      finalMinutePopupShown = false
+      return
+    }
+
+    if (!finalMinutePopupShown) {
+      if (
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        (!mainWindow.isVisible() || mainWindow.isMinimized())
+      ) {
+        showTrayWindow(timerService, runtimeService)
+        finalMinutePopupShown = true
+      }
+    }
   })
   timerService.on('notify', (title, body) => {
     const state = timerService.getAppState()
@@ -254,19 +335,34 @@ app.whenReady().then(() => {
     const force = state.settings.forceCloseApps ?? true
     runPowerAction(action, force)
   })
-  smartRuleService.start()
+
+  runtimeService.on('appInfoChanged', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      broadcastAppInfo(mainWindow, runtimeService)
+    }
+
+    if (trayWindow && !trayWindow.isDestroyed()) {
+      broadcastAppInfo(trayWindow, runtimeService)
+    }
+  })
+  runtimeService.on('notify', (title, body) => {
+    showAppNotification(title, body)
+  })
+  runtimeService.start()
+
+  smartRuleService.start(3_000)
 
   syncAutoLaunch(timerService.getAppState().settings.autoLaunch)
 
-  mainWindow = createWindow(timerService)
-  trayWindow = createTrayWindow(timerService)
+  mainWindow = createWindow(timerService, runtimeService)
   appTray = createAppTray(timerService, {
     icon: iconIco,
     openWindow: showWindow,
-    clickAction: showTrayWindow,
+    clickAction: () => showTrayWindow(timerService, runtimeService),
     quitApp: () => {
       isQuitting = true
       smartRuleService?.stop()
+      appUpdaterService?.stop()
       appTray?.destroy()
       app.quit()
     }
@@ -276,7 +372,7 @@ app.whenReady().then(() => {
     // On macOS it's common to re-create a window in the app when the
     // dock icon is clicked and there are no other windows open.
     if (BrowserWindow.getAllWindows().length === 0) {
-      mainWindow = createWindow(timerService)
+      mainWindow = createWindow(timerService, runtimeService)
     } else {
       showWindow()
     }
