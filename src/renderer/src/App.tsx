@@ -20,6 +20,7 @@ import {
   Info,
   ChevronDown
 } from 'lucide-react'
+import appIcon from './assets/icon.ico'
 
 import { Button } from '@/components/ui/button'
 import type {
@@ -218,8 +219,8 @@ function App(): React.JSX.Element {
       {/* Top Header */}
       <header className="relative h-16 border-b bg-card flex items-center justify-between px-6 shrink-0 z-30 select-none">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-primary/10 text-primary">
-            <Power className="size-5 animate-pulse" />
+          <div className="p-1 rounded-xl bg-primary/10">
+            <img src={appIcon} alt="Auto Shutdown" className="size-7 object-contain" />
           </div>
           <div>
             <h2 className="font-semibold text-sm leading-none tracking-tight">Auto Shutdown</h2>

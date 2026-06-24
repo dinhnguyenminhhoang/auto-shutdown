@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, Notification, shell, type Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, Notification, shell, type Tray } from 'electron'
 import { join } from 'path'
 import { optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+import iconIco from '../../resources/icon.ico?asset'
 import { broadcastState, registerTimerIpc } from './ipc'
 import { runPowerAction } from './power-actions'
 import { SmartRuleService } from './smart-rule-service'
@@ -23,7 +23,7 @@ function createWindow(timerService: TimerService): BrowserWindow {
     minHeight: 600,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon: nativeImage.createFromPath(iconIco),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -166,7 +166,7 @@ function showAppNotification(title: string, body: string, silent = false): void 
     const notification = new Notification({
       title,
       body,
-      icon,
+      icon: iconIco,
       silent
     })
     notification.on('click', () => {
@@ -261,7 +261,7 @@ app.whenReady().then(() => {
   mainWindow = createWindow(timerService)
   trayWindow = createTrayWindow(timerService)
   appTray = createAppTray(timerService, {
-    icon,
+    icon: iconIco,
     openWindow: showWindow,
     clickAction: showTrayWindow,
     quitApp: () => {
