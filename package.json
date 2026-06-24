@@ -1,10 +1,13 @@
 {
   "name": "auto-shutdown-vn",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": {
+    "name": "Đinh Nguyễn Minh Hoàng",
+    "url": "https://minhhoang.online"
+  },
+  "homepage": "https://minhhoang.online",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
