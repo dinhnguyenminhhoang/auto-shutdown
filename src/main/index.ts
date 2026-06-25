@@ -10,6 +10,7 @@ import { TimerService } from './timer-service'
 import { createAppTray } from './tray'
 
 let mainWindow: BrowserWindow | null = null
+let trayWindow: BrowserWindow | null = null
 let appTray: Tray | null = null
 let smartRuleService: SmartRuleService | null = null
 let appUpdaterService: AppUpdaterService | null = null
@@ -17,6 +18,24 @@ let isQuitting = false
 let lastAutoLaunch: boolean | null = null
 let finalMinutePopupShown = false
 const START_MENU_SHORTCUT_DELAY_MS = 10_000
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!app.isReady()) {
+      app.whenReady().then(() => {
+        trayWindow?.hide()
+        showWindow()
+      })
+      return
+    }
+
+    trayWindow?.hide()
+    showWindow()
+  })
+}
 
 function createWindow(
   timerService: TimerService,
@@ -80,8 +99,6 @@ function showWindow(): void {
   mainWindow.show()
   mainWindow.focus()
 }
-
-let trayWindow: BrowserWindow | null = null
 
 function createTrayWindow(
   timerService: TimerService,
